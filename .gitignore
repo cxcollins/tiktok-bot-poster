@@ -1,0 +1,23 @@
+# Secrets and runtime artifacts
+.env
+story.json
+output/
+tiktok_session/
+logs/
+bin/
+
+# Go
+*.exe
+*.test
+*.out
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
