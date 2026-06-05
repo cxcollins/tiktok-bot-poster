@@ -11,33 +11,40 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"tiktok-bot-poster/rss"
 )
 
 const (
 	geminiEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 	geminiTimeout  = 30 * time.Second
+	SlideCount     = 8
 )
 
+// Slide is one story rendered as a single TikTok slide.
 type Slide struct {
-	Slide int    `json:"slide"`
-	Text  string `json:"text"`
+	Slide    int      `json:"slide"`
+	Text     string   `json:"text"`
+	Source   string   `json:"source"`
+	Keywords []string `json:"keywords"`
 }
 
 // Script is the structure we hand off to Python via story.json.
 type Script struct {
-	Title    string   `json:"title"`
-	Summary  string   `json:"summary"`
-	Source   string   `json:"source"`
-	Keywords []string `json:"keywords"`
-	Slides   []Slide  `json:"slides"`
-	Caption  string   `json:"caption"`
+	Slides  []Slide `json:"slides"`
+	Caption string  `json:"caption"`
 }
 
-// modelOutput is the JSON we expect Gemini to return.
-type modelOutput struct {
-	Slides   []Slide  `json:"slides"`
-	Caption  string   `json:"caption"`
+// modelSlide is what Gemini returns per story.
+type modelSlide struct {
+	Slide    int      `json:"slide"`
+	Text     string   `json:"text"`
 	Keywords []string `json:"keywords"`
+}
+
+type modelOutput struct {
+	Slides  []modelSlide `json:"slides"`
+	Caption string       `json:"caption"`
 }
 
 type geminiRequest struct {
@@ -62,14 +69,18 @@ type geminiResponse struct {
 	} `json:"error,omitempty"`
 }
 
-// GenerateScript calls Gemini Flash to turn a (title, summary) into slide copy.
-func GenerateScript(title, summary, source string) (*Script, error) {
+// GenerateScript calls Gemini Flash to turn N good-news stories into one slide each.
+func GenerateScript(stories []rss.Story) (*Script, error) {
+	if len(stories) == 0 {
+		return nil, errors.New("no stories provided")
+	}
+
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
 		return nil, errors.New("GEMINI_API_KEY not set")
 	}
 
-	prompt := buildPrompt(title, summary)
+	prompt := buildPrompt(stories)
 
 	body := geminiRequest{
 		Contents: []geminiContent{{Parts: []geminiPart{{Text: prompt}}}},
@@ -92,6 +103,7 @@ func GenerateScript(title, summary, source string) (*Script, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	// TODO(connor): evaluate changing this to a include a timeout, maybe use retry logic?
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("gemini request: %w", err)
@@ -128,38 +140,52 @@ func GenerateScript(title, summary, source string) (*Script, error) {
 		return nil, errors.New("model returned zero slides")
 	}
 
+	// Attach source attribution back to each slide by index alignment with the input.
+	slides := make([]Slide, 0, len(out.Slides))
+	for _, m := range out.Slides {
+		i := m.Slide - 1
+		source := ""
+		if i >= 0 && i < len(stories) {
+			source = stories[i].Source
+		}
+		slides = append(slides, Slide{
+			Slide:    m.Slide,
+			Text:     m.Text,
+			Source:   source,
+			Keywords: m.Keywords,
+		})
+	}
+
 	return &Script{
-		Title:    title,
-		Summary:  summary,
-		Source:   source,
-		Keywords: out.Keywords,
-		Slides:   out.Slides,
-		Caption:  out.Caption,
+		Slides:  slides,
+		Caption: out.Caption,
 	}, nil
 }
 
-func buildPrompt(title, summary string) string {
-	return fmt.Sprintf(`You are writing copy for a TikTok photo slideshow about good news.
-
-Story: %s
-Summary: %s
-
+func buildPrompt(stories []rss.Story) string {
+	var b strings.Builder
+	b.WriteString("You are writing copy for a TikTok photo slideshow of good news headlines.\n")
+	b.WriteString("Each slide is ONE separate story. Write a short, punchy hook for each.\n\n")
+	b.WriteString("Stories:\n")
+	for i, s := range stories {
+		fmt.Fprintf(&b, "%d. %s\n   %s\n", i+1, s.Title, s.Summary)
+	}
+	fmt.Fprintf(&b, `
 Return ONLY valid JSON with this exact shape, no markdown, no preamble:
 {
   "slides": [
-    { "slide": 1, "text": "..." }
+    { "slide": 1, "text": "...", "keywords": ["...", "...", "..."] }
   ],
-  "caption": "caption with hashtags",
-  "keywords": ["...", "...", "..."]
+  "caption": "caption with hashtags"
 }
 
 Rules:
-- 4 to 6 slides
-- First slide must hook in under 8 words
-- Conversational, upbeat tone
-- Last slide is always a follow CTA
-- Caption must include #goodnews #upliftingnews #fyp
-- Extract 3 keywords from the story for image search and include as "keywords": [...]`, title, summary)
+- Produce exactly %d slides, one per numbered story above, in the same order
+- Each "text" is a single conversational hook under 14 words
+- Upbeat, no clickbait, no quotation marks around the text
+- For each slide include 3 concrete visual keywords for image search (objects, places, subjects — not abstract words)
+- Caption must include #goodnews #upliftingnews #fyp`, len(stories))
+	return b.String()
 }
 
 // stripCodeFence removes ```json ... ``` wrappers if the model returns them

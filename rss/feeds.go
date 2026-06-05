@@ -42,6 +42,7 @@ type Story struct {
 const (
 	maxConcurrency = 10
 	httpTimeout    = 5 * time.Second
+	MaxAge         = 7 * 24 * time.Hour
 )
 
 // FetchAll crawls every feed concurrently and returns a flat list of stories.
@@ -99,16 +100,24 @@ func fetchOne(feedURL string) ([]Story, error) {
 		return nil, err
 	}
 
+	cutoff := time.Now().Add(-MaxAge)
 	out := make([]Story, 0, len(feed.Items))
 	for _, item := range feed.Items {
 		if item == nil || item.Title == "" {
 			continue
 		}
-		published := time.Now()
-		if item.PublishedParsed != nil {
+		var published time.Time
+		switch {
+		case item.PublishedParsed != nil:
 			published = *item.PublishedParsed
-		} else if item.UpdatedParsed != nil {
+		case item.UpdatedParsed != nil:
 			published = *item.UpdatedParsed
+		default:
+			// No date — skip rather than assume it's fresh.
+			continue
+		}
+		if published.Before(cutoff) {
+			continue
 		}
 		out = append(out, Story{
 			Title:     item.Title,
