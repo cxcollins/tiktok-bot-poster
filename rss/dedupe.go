@@ -5,9 +5,10 @@ import (
 	"strings"
 )
 
-// Rank deduplicates by URL (then title), drops empty entries, and sorts by recency
-// so the freshest story is at index 0.
-func Rank(stories []Story) []Story {
+// Deduplicate drops empty entries, deduplicates by URL (then title), and sorts
+// by recency so the freshest story is at index 0. The Gemini-based ranking by
+// "most compelling" happens later in the ai package.
+func Deduplicate(stories []Story) []Story {
 	seen := make(map[string]struct{}, len(stories))
 	out := make([]Story, 0, len(stories))
 
@@ -30,12 +31,4 @@ func Rank(stories []Story) []Story {
 		return out[i].Published.After(out[j].Published)
 	})
 	return out
-}
-
-// Top returns the most recent story, or false if none are available.
-func Top(stories []Story) (Story, bool) {
-	if len(stories) == 0 {
-		return Story{}, false
-	}
-	return stories[0], true
 }

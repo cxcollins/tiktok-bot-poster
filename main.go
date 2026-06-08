@@ -6,7 +6,6 @@ import (
 	"log"
 	"math/rand"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -33,28 +32,34 @@ func main() {
 
 	randomDelay(0, *maxJitter)
 
-	// 1. Crawl feeds.
-	stories := rss.Rank(rss.FetchAll())
-	top, ok := rss.Top(stories)
-	if !ok {
+	// 1. Crawl feeds and dedupe.
+	candidates := rss.Deduplicate(rss.FetchAll())
+	if len(candidates) == 0 {
 		log.Fatal("no stories returned from any feed")
 	}
-	log.Printf("selected story: %q (%s)", top.Title, top.Source)
+	log.Printf("rss: %d candidate stories after dedupe", len(candidates))
 
-	// 2. Generate slide copy via Gemini.
-	script, err := ai.GenerateScript(top.Title, cleanSummary(top.Summary), top.Source)
+	// 2. Ask Gemini to pick the most compelling stories.
+	top, err := ai.SelectTopStories(candidates, ai.SlideCount)
+	if err != nil {
+		log.Fatalf("select: %v", err)
+	}
+	log.Printf("selected %d stories", len(top))
+
+	// 3. Generate slide copy via Gemini.
+	script, err := ai.GenerateScript(top)
 	if err != nil {
 		log.Fatalf("gemini: %v", err)
 	}
-	log.Printf("script: %d slides, %d keywords", len(script.Slides), len(script.Keywords))
+	log.Printf("script: %d slides", len(script.Slides))
 
-	// 3. Persist story.json for the Python side.
+	// 4. Persist story.json for the Python side.
 	if err := writeStory(storyFile, script); err != nil {
 		log.Fatalf("write %s: %v", storyFile, err)
 	}
 	log.Printf("wrote %s", storyFile)
 
-	// 4. Assemble slides.
+	// 5. Assemble slides.
 	if *skipAssemble {
 		log.Print("skipping assemble.py (flag)")
 	} else {
@@ -64,7 +69,7 @@ func main() {
 		log.Print("assemble.py done")
 	}
 
-	// 5. Post to TikTok.
+	// 6. Post to TikTok.
 	if *skipPost {
 		log.Print("skipping post.py (flag)")
 		return
@@ -96,26 +101,4 @@ func writeStory(path string, s *ai.Script) error {
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	return enc.Encode(s)
-}
-
-// cleanSummary strips HTML tags that often appear in RSS descriptions
-// (especially Reddit) so the prompt stays focused on prose.
-func cleanSummary(s string) string {
-	out := strings.Builder{}
-	inTag := false
-	for _, r := range s {
-		switch {
-		case r == '<':
-			inTag = true
-		case r == '>':
-			inTag = false
-		case !inTag:
-			out.WriteRune(r)
-		}
-	}
-	collapsed := strings.Join(strings.Fields(out.String()), " ")
-	if len(collapsed) > 1000 {
-		collapsed = collapsed[:1000]
-	}
-	return collapsed
 }

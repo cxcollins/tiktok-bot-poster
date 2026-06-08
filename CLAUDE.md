@@ -2,7 +2,7 @@
 
 ## Overview
 
-A fully automated pipeline that sources good news stories daily, generates slideshow images, and uploads them to TikTok as a photo carousel post. The goal is maximum automation at minimal cost (~$0.04/day).
+A fully automated pipeline that sources good news stories daily, picks the most compelling of them, generates one slide per story, and uploads them to TikTok as a photo carousel post. Each post is 8 slides; each slide is one separate story. Goal: maximum automation at minimal cost (~$0.04/day).
 
 ---
 
@@ -10,8 +10,10 @@ A fully automated pipeline that sources good news stories daily, generates slide
 
 ```
 Go (orchestrator)
-  → goroutines crawl RSS feeds concurrently
-  → Gemini Flash API generates slide copy as JSON
+  → goroutines crawl RSS feeds concurrently (filtered to past 7 days)
+  → rss.Deduplicate strips dupes + sorts by recency
+  → Gemini Flash API #1: pick the 8 most compelling stories
+  → Gemini Flash API #2: write one hook + 3 image keywords per story
   → random delay jitter (60–90 min window)
   → exec: python assemble.py
   → exec: python post.py
@@ -19,9 +21,9 @@ Go (orchestrator)
 
 Python assemble.py
   → reads story.json written by Go
-  → fetches images from Pexels API by keyword
+  → for each slide, fetches a Pexels image using that slide's own keywords
   → Pillow assembles 1080x1920 slides (image + gradient + text overlay)
-  → writes output/slide_1.jpg ... slide_n.jpg
+  → writes output/slide_1.jpg ... slide_8.jpg
 
 Python post.py
   → Playwright (persistent browser context) opens tiktok.com/upload
@@ -42,10 +44,11 @@ Python post.py
   tiktok/
     post.go                # TikTok Playwright posting logic (called via exec)
   rss/
-    feeds.go               # RSS feed URLs + fetching logic
-    rank.go                # Deduplication + story ranking
+    feeds.go               # RSS feed URLs + fetching logic (7-day age cap)
+    dedupe.go              # Deduplication + recency sort
   ai/
-    script.go              # Gemini Flash API call + JSON parsing
+    select.go              # Gemini call: pick the 8 most compelling stories
+    script.go              # Gemini call: write one hook + keywords per slide
   assemble.py              # Pillow image assembly
   post.py                  # Playwright TikTok uploader
   requirements.txt         # Python deps
@@ -106,57 +109,91 @@ var feeds = []string{
 - Fire one goroutine per feed using `sync.WaitGroup` + a results channel
 - Cap concurrency at 10 simultaneous requests with a semaphore channel `make(chan struct{}, 10)`
 - Set a 5 second timeout on each HTTP client to prevent hanging goroutines
-- Rank results by recency, deduplicate by URL
+- Drop any items older than 7 days at parse time; skip items with no parseable date
+- Deduplicate by URL (falling back to title) and sort by recency
 
 **story.json shape written by Go:**
 ```json
 {
-  "title": "Story headline",
-  "summary": "2-3 sentence summary",
-  "source": "Good News Network",
-  "keywords": ["ocean", "conservation", "wildlife"],
   "slides": [
-    { "slide": 1, "text": "Hook line here 🌊" },
-    { "slide": 2, "text": "Supporting detail..." },
-    { "slide": 3, "text": "More context..." },
-    { "slide": 4, "text": "Follow for daily good news 🌍" }
+    {
+      "slide": 1,
+      "text": "Hook line for story 1 🌊",
+      "source": "Good News Network",
+      "keywords": ["ocean", "turtle", "beach"]
+    },
+    {
+      "slide": 2,
+      "text": "Hook line for story 2 🐝",
+      "source": "Positive News",
+      "keywords": ["bees", "flowers", "meadow"]
+    }
   ],
-  "caption": "#goodnews #upliftingnews #fyp #positive"
+  "caption": "#goodnews #upliftingnews #fyp"
 }
+```
+
+Each slide is one independent story. Posts contain exactly 8 slides (see `ai.SlideCount`).
+
+---
+
+## AI Story Selection (Go → Gemini Flash)
+
+After dedupe, the candidate pool can be 50–200 stories. `ai.SelectTopStories` sends their titles + summaries to Gemini and asks it to return the 8 most compelling/inspiring, by 1-indexed position.
+
+**Prompt template:**
+```
+You are curating good news stories for a TikTok slideshow.
+Pick the {n} MOST compelling and inspiring stories from the numbered list below.
+
+Prioritize: human kindness, scientific breakthroughs, environmental wins,
+underdog stories, and uplifting moments that would make a viewer smile or feel hopeful.
+Avoid: minor local news, vague feel-good filler, anything that requires deep context to appreciate.
+
+Candidates:
+1. {title} — {summary}
+2. ...
+
+Return ONLY valid JSON: { "picks": [3, 17, 1, ...] }
+- Exactly {n} numbers
+- Each number is a story's position from the list above (1-indexed)
+- Order from most to least compelling
 ```
 
 ---
 
 ## AI Slide Copy (Go → Gemini Flash)
 
-Use **Gemini 2.0 Flash** via REST API. Cost ~$0.10/1M tokens, well under $0.01/day.
+`ai.GenerateScript` takes the 8 selected stories and asks Gemini for a hook + 3 image keywords per story in a single call.
 
 **Prompt template:**
 ```
-You are writing copy for a TikTok photo slideshow about good news.
+You are writing copy for a TikTok photo slideshow of good news headlines.
+Each slide is ONE separate story. Write a short, punchy hook for each.
 
-Story: {title}
-Summary: {summary}
+Stories:
+1. {title}
+   {summary}
+2. ...
 
 Return ONLY valid JSON with this exact shape, no markdown, no preamble:
 {
   "slides": [
-    { "slide": 1, "text": "..." },
-    ...
+    { "slide": 1, "text": "...", "keywords": ["...", "...", "..."] }
   ],
   "caption": "caption with hashtags"
 }
 
 Rules:
-- 4 to 6 slides
-- First slide must hook in under 8 words
-- Conversational, upbeat tone
-- Last slide is always a follow CTA
+- Produce exactly {n} slides, one per numbered story above, in the same order
+- Each "text" is a single conversational hook under 14 words
+- Upbeat, no clickbait, no quotation marks around the text
+- For each slide include 3 concrete visual keywords for image search
+  (objects, places, subjects — not abstract words)
 - Caption must include #goodnews #upliftingnews #fyp
-- Extract 3 keywords from the story for image search and include as "keywords": [...]
 ```
 
-Parse the JSON response directly in Go using `encoding/json`.
+Both calls use stdlib `net/http` and parse the JSON response with `encoding/json`.
 
 ---
 
@@ -189,7 +226,7 @@ Cron fires at a fixed time (e.g. 8am), Go sleeps a random 0–90 minutes before 
 
 **Steps:**
 1. Read `story.json`
-2. For each slide, query **Pexels API** (free) with the story keywords
+2. For each slide, query **Pexels API** (free) with that slide's own keywords
 3. Download best matching image
 4. Resize to 1080x1920 (TikTok vertical format)
 5. Apply dark gradient overlay (bottom 40% of image) for text legibility
@@ -283,12 +320,13 @@ playwright install chromium
 
 | Component | Daily Cost |
 |---|---|
-| RSS sourcing (feedparser) | Free |
+| RSS sourcing (gofeed) | Free |
+| Story selection (Gemini Flash) | ~$0.01 |
 | Slide copy (Gemini Flash) | ~$0.01 |
 | Images (Pexels API) | Free |
 | Image assembly (Pillow) | Free |
 | Posting (Playwright) | Free |
-| **Total** | **~$0.01/day** |
+| **Total** | **~$0.02/day** |
 
 ---
 

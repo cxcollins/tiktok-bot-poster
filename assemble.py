@@ -157,7 +157,6 @@ def main() -> int:
 
     story = json.loads(STORY_PATH.read_text())
     slides = story.get("slides") or []
-    keywords = story.get("keywords") or [story.get("title", "good news")]
     if not slides:
         print("story.json has no slides", file=sys.stderr)
         return 1
@@ -170,6 +169,7 @@ def main() -> int:
     for entry in slides:
         idx = entry.get("slide", 0)
         text = entry.get("text", "")
+        keywords = entry.get("keywords") or [text or "good news"]
         query = random.choice(keywords)
         bg = fetch_pexels_image(query, api_key)
         out_path = OUTPUT_DIR / f"slide_{idx}.jpg"

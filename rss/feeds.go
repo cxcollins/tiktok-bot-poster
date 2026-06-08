@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -121,11 +122,33 @@ func fetchOne(feedURL string) ([]Story, error) {
 		}
 		out = append(out, Story{
 			Title:     item.Title,
-			Summary:   item.Description,
+			Summary:   cleanSummary(item.Description),
 			Source:    feed.Title,
 			URL:       item.Link,
 			Published: published,
 		})
 	}
 	return out, nil
+}
+
+// cleanSummary strips HTML tags that often appear in RSS descriptions
+// (especially Reddit) and caps length so downstream prompts stay focused.
+func cleanSummary(s string) string {
+	var out strings.Builder
+	inTag := false
+	for _, r := range s {
+		switch {
+		case r == '<':
+			inTag = true
+		case r == '>':
+			inTag = false
+		case !inTag:
+			out.WriteRune(r)
+		}
+	}
+	collapsed := strings.Join(strings.Fields(out.String()), " ")
+	if len(collapsed) > 1000 {
+		collapsed = collapsed[:1000]
+	}
+	return collapsed
 }
