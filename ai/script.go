@@ -1,24 +1,23 @@
 package ai
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"google.golang.org/genai"
 
 	"tiktok-bot-poster/rss"
 )
 
 const (
-	geminiEndpoint = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-	geminiTimeout  = 30 * time.Second
-	SlideCount     = 8
+	geminiModel   = "gemini-3.5-flash"
+	geminiTimeout = 30 * time.Second
+	SlideCount    = 8
 )
 
 // Slide is one story rendered as a single TikTok slide.
@@ -47,28 +46,6 @@ type modelOutput struct {
 	Caption string       `json:"caption"`
 }
 
-type geminiRequest struct {
-	Contents         []geminiContent        `json:"contents"`
-	GenerationConfig map[string]interface{} `json:"generationConfig,omitempty"`
-}
-
-type geminiContent struct {
-	Parts []geminiPart `json:"parts"`
-}
-
-type geminiPart struct {
-	Text string `json:"text"`
-}
-
-type geminiResponse struct {
-	Candidates []struct {
-		Content geminiContent `json:"content"`
-	} `json:"candidates"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
-}
-
 // GenerateScript calls Gemini Flash to turn N good-news stories into one slide each.
 func GenerateScript(stories []rss.Story) (*Script, error) {
 	if len(stories) == 0 {
@@ -80,57 +57,33 @@ func GenerateScript(stories []rss.Story) (*Script, error) {
 		return nil, errors.New("GEMINI_API_KEY not set")
 	}
 
-	prompt := buildPrompt(stories)
-
-	body := geminiRequest{
-		Contents: []geminiContent{{Parts: []geminiPart{{Text: prompt}}}},
-		GenerationConfig: map[string]interface{}{
-			"temperature":      0.8,
-			"responseMimeType": "application/json",
-		},
-	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), geminiTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "POST", geminiEndpoint+"?key="+apiKey, bytes.NewReader(payload))
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("gemini client: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
 
-	// TODO(connor): evaluate changing this to a include a timeout, maybe use retry logic?
-	resp, err := http.DefaultClient.Do(req)
+	prompt := buildPrompt(stories)
+	temp := float32(0.8)
+	config := &genai.GenerateContentConfig{
+		Temperature:      &temp,
+		ResponseMIMEType: "application/json",
+	}
+
+	resp, err := client.Models.GenerateContent(ctx, geminiModel, genai.Text(prompt), config)
 	if err != nil {
-		return nil, fmt.Errorf("gemini request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("gemini status %d: %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("gemini generate: %w", err)
 	}
 
-	var gr geminiResponse
-	if err := json.Unmarshal(raw, &gr); err != nil {
-		return nil, fmt.Errorf("decode gemini envelope: %w", err)
+	text := stripCodeFence(strings.TrimSpace(resp.Text()))
+	if text == "" {
+		return nil, errors.New("gemini returned no text")
 	}
-	if gr.Error != nil {
-		return nil, fmt.Errorf("gemini error: %s", gr.Error.Message)
-	}
-	if len(gr.Candidates) == 0 || len(gr.Candidates[0].Content.Parts) == 0 {
-		return nil, errors.New("gemini returned no candidates")
-	}
-
-	text := strings.TrimSpace(gr.Candidates[0].Content.Parts[0].Text)
-	text = stripCodeFence(text)
 
 	var out modelOutput
 	if err := json.Unmarshal([]byte(text), &out); err != nil {

@@ -1,15 +1,14 @@
 package ai
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"strings"
+
+	"google.golang.org/genai"
 
 	"tiktok-bot-poster/rss"
 )
@@ -37,55 +36,33 @@ func SelectTopStories(candidates []rss.Story, n int) ([]rss.Story, error) {
 		return nil, errors.New("GEMINI_API_KEY not set")
 	}
 
-	prompt := buildSelectPrompt(candidates, n)
-
-	body := geminiRequest{
-		Contents: []geminiContent{{Parts: []geminiPart{{Text: prompt}}}},
-		GenerationConfig: map[string]interface{}{
-			"temperature":      0.4,
-			"responseMimeType": "application/json",
-		},
-	}
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), geminiTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "POST", geminiEndpoint+"?key="+apiKey, bytes.NewReader(payload))
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("gemini client: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	prompt := buildSelectPrompt(candidates, n)
+	temp := float32(0.4)
+	config := &genai.GenerateContentConfig{
+		Temperature:      &temp,
+		ResponseMIMEType: "application/json",
+	}
+
+	resp, err := client.Models.GenerateContent(ctx, geminiModel, genai.Text(prompt), config)
 	if err != nil {
-		return nil, fmt.Errorf("gemini request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("gemini status %d: %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("gemini generate: %w", err)
 	}
 
-	var gr geminiResponse
-	if err := json.Unmarshal(raw, &gr); err != nil {
-		return nil, fmt.Errorf("decode gemini envelope: %w", err)
+	text := stripCodeFence(strings.TrimSpace(resp.Text()))
+	if text == "" {
+		return nil, errors.New("gemini returned no text")
 	}
-	if gr.Error != nil {
-		return nil, fmt.Errorf("gemini error: %s", gr.Error.Message)
-	}
-	if len(gr.Candidates) == 0 || len(gr.Candidates[0].Content.Parts) == 0 {
-		return nil, errors.New("gemini returned no candidates")
-	}
-
-	text := stripCodeFence(strings.TrimSpace(gr.Candidates[0].Content.Parts[0].Text))
 
 	var sel selectResponse
 	if err := json.Unmarshal([]byte(text), &sel); err != nil {
