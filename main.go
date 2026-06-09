@@ -3,16 +3,18 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"math/rand"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
 
 	"tiktok-bot-poster/ai"
+	"tiktok-bot-poster/python"
 	"tiktok-bot-poster/rss"
-	"tiktok-bot-poster/tiktok"
 )
 
 const storyFile = "story.json"
@@ -51,6 +53,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("gemini: %v", err)
 	}
+	script.Caption = appendSourceLinks(script.Caption, top)
 	log.Printf("script: %d slides", len(script.Slides))
 
 	// 4. Generate per-slide background images via Gemini.
@@ -65,22 +68,22 @@ func main() {
 	}
 	log.Printf("wrote %s", storyFile)
 
-	// 5. Assemble slides.
+	// 6. Assemble slides.
 	if *skipAssemble {
 		log.Print("skipping assemble.py (flag)")
 	} else {
-		if err := tiktok.Assemble(); err != nil {
+		if err := python.Assemble(); err != nil {
 			log.Fatalf("assemble: %v", err)
 		}
 		log.Print("assemble.py done")
 	}
 
-	// 6. Post to TikTok.
+	// 7. Post to TikTok.
 	if *skipPost {
 		log.Print("skipping post.py (flag)")
 		return
 	}
-	if err := tiktok.Post(); err != nil {
+	if err := python.Post(); err != nil {
 		log.Fatalf("post: %v", err)
 	}
 	log.Print("post.py done — pipeline finished")
@@ -107,4 +110,20 @@ func writeStory(path string, s *ai.Script) error {
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	return enc.Encode(s)
+}
+
+// appendSourceLinks appends a "Sources" section to the caption so viewers can
+// follow up on any story. URLs are pulled directly from the RSS feed to avoid
+// any hallucination risk from the LLM.
+func appendSourceLinks(caption string, stories []rss.Story) string {
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(caption))
+	b.WriteString("\n\nSources:")
+	for i, s := range stories {
+		if s.URL == "" {
+			continue
+		}
+		fmt.Fprintf(&b, "\n%d. %s", i+1, s.URL)
+	}
+	return b.String()
 }

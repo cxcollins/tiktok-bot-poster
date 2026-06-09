@@ -17,7 +17,7 @@ from pathlib import Path
 
 from playwright.sync_api import Page, TimeoutError as PWTimeoutError, sync_playwright
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 STORY_PATH = ROOT / "story.json"
 OUTPUT_DIR = ROOT / "output"
 SESSION_DIR = ROOT / "tiktok_session"

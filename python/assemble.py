@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 STORY_PATH = ROOT / "story.json"
 OUTPUT_DIR = ROOT / "output"
 FONT_PATH = ROOT / "assets" / "font.ttf"

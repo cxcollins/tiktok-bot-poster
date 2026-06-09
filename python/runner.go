@@ -1,4 +1,4 @@
-package tiktok
+package python
 
 import (
 	"fmt"
@@ -6,9 +6,9 @@ import (
 	"os/exec"
 )
 
-// RunPython execs a python script and streams its stdout/stderr.
+// runPython execs a python script and streams its stdout/stderr.
 // Returns an error if the script exits non-zero.
-func RunPython(script string) error {
+func runPython(script string) error {
 	cmd := exec.Command(pythonBin(), script)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -18,14 +18,14 @@ func RunPython(script string) error {
 	return nil
 }
 
-// Assemble runs assemble.py to build slides from story.json.
+// Assemble runs python/assemble.py to build slides from story.json.
 func Assemble() error {
-	return RunPython("assemble.py")
+	return runPython("python/assemble.py")
 }
 
-// Post runs post.py to upload the slides to TikTok.
+// Post runs python/post.py to upload the slides to TikTok.
 func Post() error {
-	return RunPython("post.py")
+	return runPython("python/post.py")
 }
 
 func pythonBin() string {

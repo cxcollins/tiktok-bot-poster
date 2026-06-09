@@ -43,8 +43,10 @@ Python post.py
   main.go                  # Go orchestrator entry point
   go.mod
   go.sum
-  tiktok/
-    post.go                # TikTok Playwright posting logic (called via exec)
+  python/
+    runner.go              # Go shim that execs the Python scripts
+    assemble.py            # Pillow image assembly
+    post.py                # Playwright TikTok uploader
   rss/
     feeds.go               # RSS feed URLs + fetching logic (7-day age cap)
     dedupe.go              # Deduplication + recency sort
@@ -52,8 +54,6 @@ Python post.py
     select.go              # Gemini call: pick the 8 most compelling stories
     script.go              # Gemini call: write one hook + keywords per slide
     image.go               # Gemini Image call: per-slide background (parallel + retry)
-  assemble.py              # Pillow image assembly
-  post.py                  # Playwright TikTok uploader
   requirements.txt         # Python deps
   story.json               # Handoff file between Go and Python (gitignored)
   output/                  # Generated slide images (gitignored)
