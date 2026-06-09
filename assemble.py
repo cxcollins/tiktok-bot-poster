@@ -1,20 +1,15 @@
-"""Assemble TikTok slideshow images from story.json.
+"""Assemble TikTok slideshow images from story.json + Gemini-generated backgrounds.
 
-Reads story.json (written by Go), fetches keyword-matched photos from Pexels,
-overlays slide text on a 1080x1920 canvas, and writes output/slide_N.jpg.
+Reads story.json (written by Go) and the per-slide background images that Go
+already wrote to output/bg_<n>.png, then overlays the gradient + slide text on
+a 1080x1920 canvas and writes output/slide_<n>.jpg.
 """
 from __future__ import annotations
 
-import io
 import json
-import os
-import random
 import sys
-import textwrap
 from pathlib import Path
 
-import requests
-from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).resolve().parent
@@ -23,7 +18,6 @@ OUTPUT_DIR = ROOT / "output"
 FONT_PATH = ROOT / "assets" / "font.ttf"
 
 CANVAS = (1080, 1920)
-PEXELS_ENDPOINT = "https://api.pexels.com/v1/search"
 
 
 def load_font(size: int) -> ImageFont.FreeTypeFont:
@@ -34,26 +28,16 @@ def load_font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
-def fetch_pexels_image(query: str, api_key: str) -> Image.Image | None:
-    """Search Pexels for `query` and return a randomly chosen result as PIL Image."""
+def load_background(idx: int) -> Image.Image | None:
+    """Load the Gemini-generated background for slide `idx` if Go wrote one."""
+    path = OUTPUT_DIR / f"bg_{idx}.png"
+    if not path.exists():
+        print(f"warn: {path} missing, slide will use solid fallback", file=sys.stderr)
+        return None
     try:
-        resp = requests.get(
-            PEXELS_ENDPOINT,
-            headers={"Authorization": api_key},
-            params={"query": query, "per_page": 15, "orientation": "portrait"},
-            timeout=15,
-        )
-        resp.raise_for_status()
-        photos = resp.json().get("photos", [])
-        if not photos:
-            return None
-        photo = random.choice(photos)
-        src = photo["src"].get("portrait") or photo["src"].get("large2x") or photo["src"]["large"]
-        img_resp = requests.get(src, timeout=20)
-        img_resp.raise_for_status()
-        return Image.open(io.BytesIO(img_resp.content)).convert("RGB")
+        return Image.open(path).convert("RGB")
     except Exception as exc:
-        print(f"pexels: query {query!r} failed: {exc}", file=sys.stderr)
+        print(f"warn: failed to open {path}: {exc}", file=sys.stderr)
         return None
 
 
@@ -130,7 +114,7 @@ def draw_text(canvas: Image.Image, text: str) -> None:
 
 def render_slide(background: Image.Image | None, text: str, out_path: Path) -> None:
     if background is None:
-        # Fallback: solid gradient if Pexels fails.
+        # Final safety net if Go didn't write a placeholder either.
         canvas = Image.new("RGB", CANVAS, (20, 30, 60))
     else:
         canvas = cover_resize(background, CANVAS)
@@ -145,12 +129,6 @@ def render_slide(background: Image.Image | None, text: str, out_path: Path) -> N
 
 
 def main() -> int:
-    load_dotenv(ROOT / ".env")
-    api_key = os.environ.get("PEXELS_API_KEY")
-    if not api_key:
-        print("PEXELS_API_KEY not set", file=sys.stderr)
-        return 1
-
     if not STORY_PATH.exists():
         print(f"missing {STORY_PATH}", file=sys.stderr)
         return 1
@@ -162,16 +140,14 @@ def main() -> int:
         return 1
 
     OUTPUT_DIR.mkdir(exist_ok=True)
-    # Clear any leftovers from previous runs so we don't upload stale images.
+    # Clear leftover finished slides; backgrounds were already cleared by Go.
     for old in OUTPUT_DIR.glob("slide_*.jpg"):
         old.unlink()
 
     for entry in slides:
         idx = entry.get("slide", 0)
         text = entry.get("text", "")
-        keywords = entry.get("keywords") or [text or "good news"]
-        query = random.choice(keywords)
-        bg = fetch_pexels_image(query, api_key)
+        bg = load_background(idx)
         out_path = OUTPUT_DIR / f"slide_{idx}.jpg"
         render_slide(bg, text, out_path)
 

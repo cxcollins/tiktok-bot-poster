@@ -14,6 +14,8 @@ Go (orchestrator)
   → rss.Deduplicate strips dupes + sorts by recency
   → Gemini Flash API #1: pick the 8 most compelling stories
   → Gemini Flash API #2: write one hook + 3 image keywords per story
+  → Gemini 3.1 Flash Image API #3: generate one bg per slide (parallel,
+      with retry; falls back to a solid-color placeholder)
   → random delay jitter (60–90 min window)
   → exec: python assemble.py
   → exec: python post.py
@@ -21,8 +23,8 @@ Go (orchestrator)
 
 Python assemble.py
   → reads story.json written by Go
-  → for each slide, fetches a Pexels image using that slide's own keywords
-  → Pillow assembles 1080x1920 slides (image + gradient + text overlay)
+  → for each slide, opens output/bg_<n>.png written by Go
+  → Pillow overlays gradient + text on a 1080x1920 canvas
   → writes output/slide_1.jpg ... slide_8.jpg
 
 Python post.py
@@ -49,6 +51,7 @@ Python post.py
   ai/
     select.go              # Gemini call: pick the 8 most compelling stories
     script.go              # Gemini call: write one hook + keywords per slide
+    image.go               # Gemini Image call: per-slide background (parallel + retry)
   assemble.py              # Pillow image assembly
   post.py                  # Playwright TikTok uploader
   requirements.txt         # Python deps
@@ -220,20 +223,40 @@ Cron fires at a fixed time (e.g. 8am), Go sleeps a random 0–90 minutes before 
 
 ---
 
+## Image Generation (Go → Gemini 3.1 Flash Image / "nano banana")
+
+`ai.GenerateImages` runs after the script is generated and before assemble.py is execed. It produces one 9:16 background per slide, in parallel.
+
+**Behavior:**
+- Concurrency cap: `imageConcurrency = 4` goroutines at a time (free tier is 10 req/min — this leaves headroom).
+- Retry: on failure, wait 60s and retry up to `imageMaxRetries = 2` times (3 attempts total).
+- Fallback: if all attempts fail, write a solid navy-blue PNG placeholder at the same path so the slide still renders.
+- Output: `output/bg_<n>.png` for slide n.
+
+**Prompt template (per slide):**
+```
+{slide.Text}. Visual elements: {kw1}, {kw2}, {kw3}. Photorealistic,
+cinematic lighting, vertical 9:16 composition, shot on a high-end camera,
+no text, no captions, no logos, no watermarks.
+```
+
+The "no text/captions/logos" suffix matters — assemble.py adds the slide hook on top in Pillow, and Gemini will otherwise sometimes burn its own caption into the image.
+
+---
+
 ## Image Assembly (Python — assemble.py)
 
-**Dependencies:** `pillow`, `requests`, `python-dotenv`
+**Dependencies:** `pillow`
 
 **Steps:**
 1. Read `story.json`
-2. For each slide, query **Pexels API** (free) with that slide's own keywords
-3. Download best matching image
-4. Resize to 1080x1920 (TikTok vertical format)
-5. Apply dark gradient overlay (bottom 40% of image) for text legibility
-6. Render slide text centered in lower third using a clean sans-serif font
-7. Save as `output/slide_N.jpg`
+2. For each slide, open `output/bg_<n>.png` (written by Go in the previous stage)
+3. Cover-resize to 1080x1920 (TikTok vertical format) and apply a soft blur
+4. Apply dark gradient overlay (bottom 40% of image) for text legibility
+5. Render slide text centered in lower third using a clean sans-serif font
+6. Save as `output/slide_N.jpg`
 
-**Pexels API:** Free, no copyright issues, returns high quality photos. Get key at pexels.com/api.
+If Go's image stage failed entirely and no `bg_<n>.png` exists, assemble.py falls back to a solid-color canvas.
 
 **Font:** Download and commit a free font like Inter or Montserrat Bold to `/assets/font.ttf` — don't rely on system fonts for portability.
 
@@ -263,7 +286,6 @@ Use **Playwright** with a persistent browser context to preserve login session a
 
 ```
 GEMINI_API_KEY=
-PEXELS_API_KEY=
 ```
 
 ---
@@ -296,17 +318,14 @@ go build -o bin/pipeline main.go
 ```
 github.com/mmcdole/gofeed       # RSS parsing
 github.com/joho/godotenv        # .env loading
+google.golang.org/genai         # Gemini API client (text + image)
 ```
-
-HTTP calls to Gemini use stdlib `net/http`. No extra HTTP client library needed.
 
 ## Python Dependencies (requirements.txt)
 
 ```
 playwright
 pillow
-requests
-python-dotenv
 ```
 
 Install Playwright browser after pip install:
@@ -323,7 +342,7 @@ playwright install chromium
 | RSS sourcing (gofeed) | Free |
 | Story selection (Gemini Flash) | ~$0.01 |
 | Slide copy (Gemini Flash) | ~$0.01 |
-| Images (Pexels API) | Free |
+| Images (Gemini 3.1 Flash Image, free tier) | Free |
 | Image assembly (Pillow) | Free |
 | Posting (Playwright) | Free |
 | **Total** | **~$0.02/day** |

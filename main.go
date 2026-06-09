@@ -53,7 +53,13 @@ func main() {
 	}
 	log.Printf("script: %d slides", len(script.Slides))
 
-	// 4. Persist story.json for the Python side.
+	// 4. Generate per-slide background images via Gemini.
+	if err := ai.GenerateImages(script.Slides, "output"); err != nil {
+		log.Fatalf("images: %v", err)
+	}
+	log.Printf("images: backgrounds generated")
+
+	// 5. Persist story.json for the Python side.
 	if err := writeStory(storyFile, script); err != nil {
 		log.Fatalf("write %s: %v", storyFile, err)
 	}
